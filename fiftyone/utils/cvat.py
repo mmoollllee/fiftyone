@@ -58,6 +58,7 @@ def import_annotations(
     num_workers=None,
     occluded_attr=None,
     group_id_attr=None,
+    job_status=None,
     backend="cvat",
     **kwargs,
 ):
@@ -123,6 +124,7 @@ def import_annotations(
             occlusion information for all spatial labels
         group_id_attr (None): an optional attribute name in which to store the
             group id for labels
+        job_status (None): an optional attribute to only import those CVAT jobs with a specific status
         backend ("cvat"): the name of the CVAT backend to use
         **kwargs: CVAT authentication credentials to pass to
             :class:`CVATBackendConfig`
@@ -4575,8 +4577,12 @@ class CVATAnnotationAPI(foua.AnnotationAPI):
         id_map = results.id_map
         server_id_map = results.server_id_map
         task_ids = results.task_ids
+        job_ids = results.job_ids
         frame_id_map = results.frame_id_map
         labels_task_map = results.labels_task_map
+
+        # Let's say we have a argument here
+        job_status = "validation"
 
         _, project_id = self._parse_project_details(
             results.config.project_name, results.config.project_id
@@ -4621,6 +4627,29 @@ class CVATAnnotationAPI(foua.AnnotationAPI):
                     )
                     continue
 
+                # If job_status is set and is one of CVAT's status'
+                frames_to_download = []
+                if job_status in ["annotation", "validation", "acceptance"]:
+                    for job_id in job_ids[task_id]:
+                        # Get job_status
+                        job_url = self.taskless_job_url(job_id)
+                        try:
+                            job_resp = self.get(job_url).json()
+                        except:
+                            logger.warning(
+                                "Couldn't fetch job information. Skipping"
+                            )
+                            continue
+
+                        if not job_resp["status"] == job_status:
+                            logger.info(
+                                "Skipping job %s because of status mismatch",
+                                job_id,
+                            )
+                            continue
+
+                        frames_to_download += range(job_resp["start_frame"], job_resp["stop_frame"])
+
                 data_resp = self.get(self.task_data_meta_url(task_id)).json()
                 frames = data_resp["frames"]
                 frame_start = data_resp["start_frame"]
@@ -4635,6 +4664,11 @@ class CVATAnnotationAPI(foua.AnnotationAPI):
                 all_shapes = task_resp["shapes"]
                 all_tags = task_resp["tags"]
                 all_tracks = task_resp["tracks"]
+
+                if frames_to_download:
+                    all_shapes = [x for x in all_shapes if x['frame'] in frames_to_download]
+                    all_tags = [x for x in all_tags if x['frame'] in frames_to_download]
+                    all_tracks = [x for x in all_tracks if x['frame'] in frames_to_download]
 
                 # For videos that were subsampled, remap the frame numbers to
                 # those on the original video
